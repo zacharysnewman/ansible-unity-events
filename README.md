@@ -1,4 +1,4 @@
-# Ansible Events
+# Ansible Unity Events
 
 A Pub/Sub Event Aggregator for Unity. It's really an "anything" aggregator, but it's very useful for aggregating events so they can be subscribed and published to without the subscriber and publisher directly referencing each other.
 
