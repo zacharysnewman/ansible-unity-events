@@ -3,15 +3,12 @@
   "plugins": [
     ["@semantic-release/commit-analyzer", { "preset": "angular" }],
     "@semantic-release/release-notes-generator",
-    [
-      "@semantic-release/changelog",
-      { "preset": "angular", "changelogFile": "web~/CHANGELOG.md" }
-    ],
-    ["@semantic-release/npm", { "npmPublish": true, "pkgRoot": "web~" }],
+    ["@semantic-release/changelog", { "preset": "angular" }],
+    ["@semantic-release/npm", { "npmPublish": true }],
     [
       "@semantic-release/git",
       {
-        "assets": ["web~/package.json", "web~/CHANGELOG.md"],
+        "assets": ["package.json", "CHANGELOG.md"],
         "message": "chore(release): ansible-events ${nextRelease.version} [skip ci]\n\n${nextRelease.notes}"
       }
     ],

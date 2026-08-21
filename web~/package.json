@@ -42,8 +42,9 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --test --experimental-strip-types test/*.test.ts",
-    "prepublishOnly": "npm run typecheck && npm test && npm run build"
+    "test": "tsc -p tsconfig.test.json && node --test .tmp-test/test/*.test.js",
+    "prepublishOnly": "npm run typecheck && npm test && npm run build",
+    "test:fast": "node --test --experimental-strip-types test/*.test.ts"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

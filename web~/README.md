@@ -298,9 +298,14 @@ rather than one-shot.
 cd 'web~'
 npm install
 npm run typecheck   # includes compile-time inference assertions
-npm test
+npm test            # compiles, then runs the suite against the emitted JS
 npm run build
 ```
+
+`npm test` compiles to a temporary directory first, so it exercises the same
+JavaScript consumers get and runs on every supported Node version. For a
+faster local loop on Node 22.6+, `npm run test:fast` runs the suite straight
+from TypeScript via native type stripping.
 
 The directory is named `web~` on purpose: Unity's asset importer ignores any
 folder whose name ends in `~`, so this TypeScript package is invisible to Unity
