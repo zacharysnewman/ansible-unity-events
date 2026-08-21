@@ -7,6 +7,13 @@ There are 3 different types of events included:
 - AnsibleEventAsync
 - AnsibleEventCoroutine
 
+> **Using this outside Unity?** A TypeScript rewrite for web and Node lives in
+> [`web~/`](web~) in this repository and ships to npm as
+> [`ansible-events`](https://www.npmjs.com/package/ansible-events). It keeps the
+> same publisher/subscriber-decoupling idea, with payload types inferred from a
+> single event map. See [`web~/README.md`](web~/README.md) for the API and a
+> Unity-to-TypeScript migration table.
+
 ## Defining Custom Events
 
 Namespace for defining events:

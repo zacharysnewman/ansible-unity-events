@@ -1,8 +1,18 @@
-name: CI
+name: Release (Unity)
 on:
   push:
     branches:
       - main
+    # Scoped so commits that only touch the TypeScript package in web~/ do not
+    # cut a Unity release. The web package has its own pipeline in
+    # release-web.yml.
+    paths:
+      - 'Runtime/**'
+      - 'package.json'
+      - 'README.md'
+      - 'LICENSE.md'
+      - '.releaserc.json'
+      - '.github/workflows/release.yml'
 jobs:
   release:
     name: release
