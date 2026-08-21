@@ -1,0 +1,42 @@
+name: Release (web)
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'web~/**'
+      - '.github/workflows/release-web.yml'
+      - '.releaserc.web.json'
+jobs:
+  release:
+    name: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.x'
+          cache: npm
+          cache-dependency-path: 'web~/package-lock.json'
+      - name: Install and verify
+        working-directory: 'web~'
+        run: |
+          npm ci
+          npm run typecheck
+          npm test
+          npm run build
+      - name: Release
+        uses: cycjimmy/semantic-release-action@v4
+        with:
+          extra_plugins: |
+            @semantic-release/changelog
+            @semantic-release/git
+          branch: main
+          extends: ./.releaserc.web.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Required for npm publishing. Add under
+          # Settings -> Secrets and variables -> Actions.
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}

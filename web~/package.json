@@ -1,0 +1,59 @@
+{
+  "name": "ansible-events",
+  "version": "0.1.0",
+  "description": "A type-safe pub/sub event aggregator for the web. Publishers and subscribers never reference each other.",
+  "keywords": [
+    "ansible",
+    "event",
+    "events",
+    "aggregator",
+    "pubsub",
+    "emitter",
+    "typescript"
+  ],
+  "author": {
+    "name": "zacharysnewman",
+    "url": "https://github.com/zacharysnewman"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zacharysnewman/ansible-unity-events.git",
+    "directory": "web~"
+  },
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test --experimental-strip-types test/*.test.ts",
+    "prepublishOnly": "npm run typecheck && npm test && npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2"
+  },
+  "homepage": "https://github.com/zacharysnewman/ansible-unity-events/tree/main/web~#readme",
+  "bugs": {
+    "url": "https://github.com/zacharysnewman/ansible-unity-events/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
