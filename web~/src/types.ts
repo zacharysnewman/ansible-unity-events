@@ -1,26 +1,58 @@
-/**
- * A map of event names to the tuple of arguments each event carries.
- *
- * @example
- * ```ts
- * type AppEvents = {
- *   playerScored: [name: string, points: number];
- *   gameOver: [];
- * };
- * ```
- */
-export type EventMap = Record<string, readonly unknown[]>;
+declare const phantom: unique symbol;
 
 /**
- * A subscriber. May be async; see {@link Aggregator.emitConcurrent}.
+ * A handle identifying one event and carrying its payload types.
  *
- * The return type is `unknown` rather than `void | Promise<void>` on purpose.
- * TypeScript only lets a function returning any type be passed where a
- * `void`-returning type is expected; that exemption does not apply to a
- * *union* containing `void`, which would reject ordinary expression-bodied
- * arrows like `() => log.push(x)`. Returned values are ignored, except that
- * the awaiting dispatch modes await them.
+ * Tokens are the web analogue of the Unity package's event classes. There,
+ * `class PlayerScored : AnsibleEventSync<string, int> {}` makes the event a
+ * named type and the registry is keyed by `System.Type`; here `defineEvent`
+ * makes it a named value and the registry is keyed by object identity. Both
+ * are nominal: two tokens with the same name are still two different events,
+ * exactly as two identically-named C# classes would be.
+ *
+ * Keying on a value rather than a string literal is what lets an editor answer
+ * "which systems react to this event?" — Find All References on a token
+ * resolves every `emit` and `on` site, which a string key cannot do.
  */
+export interface EventToken<TArgs extends readonly unknown[]> {
+  /** Label used in error messages and debugging. Not an identity. */
+  readonly name: string;
+  /**
+   * Phantom type carrier. Never present at runtime — it exists only so the
+   * payload tuple has somewhere to live on the type.
+   */
+  readonly [phantom]: TArgs;
+}
+
+/** Any event token, whatever its payload. */
+export type AnyEventToken = EventToken<readonly unknown[]>;
+
+/** The payload tuple carried by an event token. */
+export type PayloadOf<T extends AnyEventToken> =
+  T extends EventToken<infer TArgs> ? TArgs : never;
+
+/**
+ * Declares an event.
+ *
+ * Collect these in one module — the aggregate of them is your application's
+ * vocabulary of things that can happen:
+ *
+ * ```ts
+ * // events.ts
+ * export const CoinCollected = defineEvent<[playerId: number]>('CoinCollected');
+ * export const GameOver = defineEvent<[]>('GameOver');
+ * ```
+ *
+ * @param name Label for debugging. Does not identify the event — two calls
+ *   with the same name produce two distinct events.
+ */
+export function defineEvent<TArgs extends readonly unknown[] = []>(
+  name: string,
+): EventToken<TArgs> {
+  return { name } as EventToken<TArgs>;
+}
+
+/** A subscriber. May be async; see {@link Aggregator.emitConcurrent}. */
 export type Handler<TArgs extends readonly unknown[]> = (
   ...args: TArgs
 ) => unknown;
@@ -30,8 +62,8 @@ export type Unsubscribe = () => void;
 
 /** Context describing which dispatch an error came from. */
 export interface ErrorContext {
-  /** The event whose dispatch threw. */
-  readonly event: string;
+  /** The event whose dispatch threw. Use `.name` for logging. */
+  readonly event: AnyEventToken;
   /** The arguments the event was published with. */
   readonly args: readonly unknown[];
 }

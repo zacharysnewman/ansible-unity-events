@@ -1,12 +1,20 @@
 import type {
   AggregatorOptions,
+  AnyEventToken,
   ErrorContext,
-  EventMap,
   Handler,
+  PayloadOf,
   StreamOptions,
   Unsubscribe,
   WaitForOptions,
 } from './types.ts';
+
+interface Registration {
+  /** The function the caller passed to `on`/`once`, used for identity. */
+  readonly handler: Handler<never>;
+  /** Removed from the registry immediately before its first invocation. */
+  readonly once: boolean;
+}
 
 function isThenable(value: unknown): value is PromiseLike<unknown> {
   return (
@@ -16,29 +24,23 @@ function isThenable(value: unknown): value is PromiseLike<unknown> {
   );
 }
 
-interface Registration {
-  /** The function the caller passed to `on`/`once`, used for identity. */
-  readonly handler: Handler<never>;
-  /** Removed from the registry immediately before its first invocation. */
-  readonly once: boolean;
-}
-
 /**
- * A type-safe pub/sub hub. Publishers and subscribers reference the
- * aggregator, never each other.
+ * A pub/sub hub. Publishers and subscribers reference the aggregator and their
+ * shared event tokens, never each other.
  *
  * Construct with {@link createAggregator} rather than `new`.
  */
-export class Aggregator<TEvents extends EventMap> {
+export class Aggregator {
   /**
-   * event -> (caller's handler -> registration).
+   * token -> (caller's handler -> registration).
    *
-   * The inner map is keyed by the original handler so `on` can dedupe and
-   * `off` can find a registration in O(1), while preserving insertion order
-   * for dispatch.
+   * Keyed by token identity, mirroring the Unity package's
+   * `Dictionary<Type, object>`. The inner map is keyed by the original handler
+   * so `on` can dedupe and `off` can find a registration in O(1), while
+   * preserving insertion order for dispatch.
    */
-  readonly #registry = new Map<string, Map<Handler<never>, Registration>>();
-  readonly #paused = new Set<string>();
+  readonly #registry = new Map<AnyEventToken, Map<Handler<never>, Registration>>();
+  readonly #paused = new Set<AnyEventToken>();
   #allPaused = false;
   readonly #onError: ((error: unknown, context: ErrorContext) => void) | undefined;
 
@@ -50,11 +52,15 @@ export class Aggregator<TEvents extends EventMap> {
    * Subscribes to an event. Subscribing the same function twice is a no-op,
    * so a handler never runs more than once per publish.
    *
+   * Note that "the same function" means the same reference. Unlike C#
+   * delegates, which compare by target and method, two separately created
+   * arrow functions or `.bind()` results are always distinct.
+   *
    * @returns A function that removes this subscription.
    */
-  on<K extends keyof TEvents & string>(
-    event: K,
-    handler: Handler<TEvents[K]>,
+  on<TEvent extends AnyEventToken>(
+    event: TEvent,
+    handler: Handler<PayloadOf<TEvent>>,
   ): Unsubscribe {
     return this.#add(event, handler, false);
   }
@@ -66,17 +72,17 @@ export class Aggregator<TEvents extends EventMap> {
    * subscription wins and this call is a no-op — a handler is only ever
    * registered once per event.
    */
-  once<K extends keyof TEvents & string>(
-    event: K,
-    handler: Handler<TEvents[K]>,
+  once<TEvent extends AnyEventToken>(
+    event: TEvent,
+    handler: Handler<PayloadOf<TEvent>>,
   ): Unsubscribe {
     return this.#add(event, handler, true);
   }
 
   /** Removes a subscription. Unsubscribing an unknown handler is a no-op. */
-  off<K extends keyof TEvents & string>(
-    event: K,
-    handler: Handler<TEvents[K]>,
+  off<TEvent extends AnyEventToken>(
+    event: TEvent,
+    handler: Handler<PayloadOf<TEvent>>,
   ): void {
     const handlers = this.#registry.get(event);
     if (handlers === undefined) return;
@@ -99,13 +105,16 @@ export class Aggregator<TEvents extends EventMap> {
    *
    * @returns The number of subscribers invoked. `0` if the event is paused.
    */
-  emit<K extends keyof TEvents & string>(event: K, ...args: TEvents[K]): number {
+  emit<TEvent extends AnyEventToken>(
+    event: TEvent,
+    ...args: PayloadOf<TEvent>
+  ): number {
     const batch = this.#snapshot(event);
     if (batch.length === 0) return 0;
 
     for (const registration of batch) {
       try {
-        const returned = (registration.handler as Handler<TEvents[K]>)(...args);
+        const returned = (registration.handler as Handler<PayloadOf<TEvent>>)(...args);
         // An async subscriber rejects rather than throwing, so it would sail
         // past the catch below and surface as an unhandled rejection. Route it
         // to the same place a synchronous throw goes.
@@ -136,9 +145,9 @@ export class Aggregator<TEvents extends EventMap> {
    *
    * @returns The number of subscribers invoked. `0` if the event is paused.
    */
-  async emitConcurrent<K extends keyof TEvents & string>(
-    event: K,
-    ...args: TEvents[K]
+  async emitConcurrent<TEvent extends AnyEventToken>(
+    event: TEvent,
+    ...args: PayloadOf<TEvent>
   ): Promise<number> {
     const batch = this.#snapshot(event);
     if (batch.length === 0) return 0;
@@ -146,7 +155,7 @@ export class Aggregator<TEvents extends EventMap> {
     await Promise.all(
       batch.map(async (registration) => {
         try {
-          await (registration.handler as Handler<TEvents[K]>)(...args);
+          await (registration.handler as Handler<PayloadOf<TEvent>>)(...args);
         } catch (error) {
           this.#reportError(error, event, args);
         }
@@ -168,16 +177,16 @@ export class Aggregator<TEvents extends EventMap> {
    *
    * @returns The number of subscribers invoked. `0` if the event is paused.
    */
-  async emitSequential<K extends keyof TEvents & string>(
-    event: K,
-    ...args: TEvents[K]
+  async emitSequential<TEvent extends AnyEventToken>(
+    event: TEvent,
+    ...args: PayloadOf<TEvent>
   ): Promise<number> {
     const batch = this.#snapshot(event);
     if (batch.length === 0) return 0;
 
     for (const registration of batch) {
       try {
-        await (registration.handler as Handler<TEvents[K]>)(...args);
+        await (registration.handler as Handler<PayloadOf<TEvent>>)(...args);
       } catch (error) {
         this.#reportError(error, event, args);
       }
@@ -189,18 +198,18 @@ export class Aggregator<TEvents extends EventMap> {
    * Resolves with the next payload published for an event.
    *
    * This is the web-native replacement for the Unity package's coroutine
-   * events: `const [name, points] = await bus.waitFor('playerScored')`.
+   * events: `const [playerId] = await bus.waitFor(CoinCollected)`.
    *
    * Rejects if `timeoutMs` elapses or `signal` aborts. Paused events do not
    * publish, so a `waitFor` on a paused event simply keeps waiting.
    */
-  waitFor<K extends keyof TEvents & string>(
-    event: K,
+  waitFor<TEvent extends AnyEventToken>(
+    event: TEvent,
     options: WaitForOptions = {},
-  ): Promise<TEvents[K]> {
+  ): Promise<PayloadOf<TEvent>> {
     const { timeoutMs, signal } = options;
 
-    return new Promise<TEvents[K]>((resolve, reject) => {
+    return new Promise<PayloadOf<TEvent>>((resolve, reject) => {
       if (signal?.aborted === true) {
         reject(signal.reason);
         return;
@@ -214,10 +223,10 @@ export class Aggregator<TEvents extends EventMap> {
         signal?.removeEventListener('abort', onAbort);
       };
 
-      const handler = ((...args: TEvents[K]): void => {
+      const handler = ((...args: PayloadOf<TEvent>): void => {
         settle();
         resolve(args);
-      }) as Handler<TEvents[K]>;
+      }) as Handler<PayloadOf<TEvent>>;
 
       const onAbort = (): void => {
         settle();
@@ -231,7 +240,9 @@ export class Aggregator<TEvents extends EventMap> {
         timer = setTimeout(() => {
           settle();
           reject(
-            new Error(`Timed out after ${timeoutMs}ms waiting for "${event}"`),
+            new Error(
+              `Timed out after ${timeoutMs}ms waiting for "${event.name}"`,
+            ),
           );
         }, timeoutMs);
       }
@@ -242,23 +253,23 @@ export class Aggregator<TEvents extends EventMap> {
    * Consumes an event as an async iterable:
    *
    * ```ts
-   * for await (const [name, points] of bus.stream('playerScored')) { ... }
+   * for await (const [playerId] of bus.stream(CoinCollected)) { ... }
    * ```
    *
    * Events published while the consumer is busy are buffered (see
    * {@link StreamOptions.bufferSize}). Breaking out of the loop, returning, or
    * throwing unsubscribes.
    */
-  stream<K extends keyof TEvents & string>(
-    event: K,
+  stream<TEvent extends AnyEventToken>(
+    event: TEvent,
     options: StreamOptions = {},
-  ): AsyncIterableIterator<TEvents[K]> {
+  ): AsyncIterableIterator<PayloadOf<TEvent>> {
     const { bufferSize = Infinity, signal } = options;
-    const buffer: TEvents[K][] = [];
-    const waiting: ((result: IteratorResult<TEvents[K]>) => void)[] = [];
+    const buffer: PayloadOf<TEvent>[] = [];
+    const waiting: ((result: IteratorResult<PayloadOf<TEvent>>) => void)[] = [];
     let done = false;
 
-    const handler = ((...args: TEvents[K]): void => {
+    const handler = ((...args: PayloadOf<TEvent>): void => {
       const next = waiting.shift();
       if (next !== undefined) {
         next({ value: args, done: false });
@@ -266,7 +277,7 @@ export class Aggregator<TEvents extends EventMap> {
       }
       buffer.push(args);
       if (buffer.length > bufferSize) buffer.shift();
-    }) as Handler<TEvents[K]>;
+    }) as Handler<PayloadOf<TEvent>>;
 
     const finish = (): void => {
       if (done) return;
@@ -286,8 +297,8 @@ export class Aggregator<TEvents extends EventMap> {
       signal?.addEventListener('abort', finish, { once: true });
     }
 
-    const iterator: AsyncIterableIterator<TEvents[K]> = {
-      next: (): Promise<IteratorResult<TEvents[K]>> => {
+    const iterator: AsyncIterableIterator<PayloadOf<TEvent>> = {
+      next: (): Promise<IteratorResult<PayloadOf<TEvent>>> => {
         const buffered = buffer.shift();
         if (buffered !== undefined) {
           return Promise.resolve({ value: buffered, done: false });
@@ -297,11 +308,11 @@ export class Aggregator<TEvents extends EventMap> {
         }
         return new Promise((resolve) => waiting.push(resolve));
       },
-      return: (): Promise<IteratorResult<TEvents[K]>> => {
+      return: (): Promise<IteratorResult<PayloadOf<TEvent>>> => {
         finish();
         return Promise.resolve({ value: undefined, done: true });
       },
-      throw: (error?: unknown): Promise<IteratorResult<TEvents[K]>> => {
+      throw: (error?: unknown): Promise<IteratorResult<PayloadOf<TEvent>>> => {
         finish();
         return Promise.reject(error);
       },
@@ -317,7 +328,7 @@ export class Aggregator<TEvents extends EventMap> {
    * no argument. Subscriptions are left intact; publishes made while paused
    * are dropped, not queued.
    */
-  pause(event?: keyof TEvents & string): void {
+  pause(event?: AnyEventToken): void {
     if (event === undefined) {
       this.#allPaused = true;
       return;
@@ -326,7 +337,7 @@ export class Aggregator<TEvents extends EventMap> {
   }
 
   /** Reverses {@link pause}. */
-  resume(event?: keyof TEvents & string): void {
+  resume(event?: AnyEventToken): void {
     if (event === undefined) {
       this.#allPaused = false;
       this.#paused.clear();
@@ -336,25 +347,28 @@ export class Aggregator<TEvents extends EventMap> {
   }
 
   /** Whether publishes for an event are currently suppressed. */
-  isPaused(event: keyof TEvents & string): boolean {
+  isPaused(event: AnyEventToken): boolean {
     return this.#allPaused || this.#paused.has(event);
   }
 
   /** How many subscribers an event has. */
-  listenerCount(event: keyof TEvents & string): number {
+  listenerCount(event: AnyEventToken): number {
     return this.#registry.get(event)?.size ?? 0;
   }
 
-  /** Every event that currently has at least one subscriber. */
-  events(): (keyof TEvents & string)[] {
-    return [...this.#registry.keys()] as (keyof TEvents & string)[];
+  /**
+   * Every event that currently has at least one subscriber. Useful for
+   * answering "what is listening right now?" while debugging a fan-out.
+   */
+  events(): AnyEventToken[] {
+    return [...this.#registry.keys()];
   }
 
   /**
    * Removes every subscriber for an event, or for all events when called
    * with no argument. Does not change paused state.
    */
-  clear(event?: keyof TEvents & string): void {
+  clear(event?: AnyEventToken): void {
     if (event === undefined) {
       this.#registry.clear();
       return;
@@ -362,9 +376,9 @@ export class Aggregator<TEvents extends EventMap> {
     this.#registry.delete(event);
   }
 
-  #add<K extends keyof TEvents & string>(
-    event: K,
-    handler: Handler<TEvents[K]>,
+  #add<TEvent extends AnyEventToken>(
+    event: TEvent,
+    handler: Handler<PayloadOf<TEvent>>,
     once: boolean,
   ): Unsubscribe {
     let handlers = this.#registry.get(event);
@@ -386,7 +400,7 @@ export class Aggregator<TEvents extends EventMap> {
    * registrations up front, so a handler cannot be invoked twice even if it
    * republishes the same event.
    */
-  #snapshot(event: string): Registration[] {
+  #snapshot(event: AnyEventToken): Registration[] {
     if (this.isPaused(event)) return [];
 
     const handlers = this.#registry.get(event);
@@ -400,7 +414,11 @@ export class Aggregator<TEvents extends EventMap> {
     return batch;
   }
 
-  #reportError(error: unknown, event: string, args: readonly unknown[]): void {
+  #reportError(
+    error: unknown,
+    event: AnyEventToken,
+    args: readonly unknown[],
+  ): void {
     if (this.#onError === undefined) {
       // Surface it to the platform's unhandled-error path without
       // interrupting the dispatch loop.
@@ -414,23 +432,26 @@ export class Aggregator<TEvents extends EventMap> {
 }
 
 /**
- * Creates a typed aggregator.
+ * Creates an aggregator.
+ *
+ * Create one per scope that should not share events. A single module-level
+ * instance is the usual shape, but a per-player instance is what keeps local
+ * multiplayer from cross-wiring — something the Unity package's static
+ * `Ansible` class cannot express.
  *
  * @example
  * ```ts
- * type AppEvents = {
- *   playerScored: [name: string, points: number];
- *   gameOver: [];
- * };
+ * // events.ts
+ * export const CoinCollected = defineEvent<[playerId: number]>('CoinCollected');
  *
- * export const bus = createAggregator<AppEvents>();
+ * // bus.ts
+ * export const bus = createAggregator();
  *
- * bus.on('playerScored', (name, points) => console.log(name, points));
- * bus.emit('playerScored', 'zack', 10);
+ * // anywhere
+ * bus.on(CoinCollected, (playerId) => playSound(playerId));
+ * bus.emit(CoinCollected, 1);
  * ```
  */
-export function createAggregator<TEvents extends EventMap>(
-  options?: AggregatorOptions,
-): Aggregator<TEvents> {
-  return new Aggregator<TEvents>(options);
+export function createAggregator(options?: AggregatorOptions): Aggregator {
+  return new Aggregator(options);
 }
